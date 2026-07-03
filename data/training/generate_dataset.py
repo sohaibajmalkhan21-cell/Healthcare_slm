@@ -1,28 +1,30 @@
 """
-Synthetic instruction-tuning dataset generator.
+Synthetic + real instruction-tuning dataset generator for the
+healthcare IoT SLM fine-tuning pass (Milestone 5).
 
-Produces JSONL training examples from the existing knowledge base,
-targeting four behaviors identified during Milestone 4 evaluation:
-grounded QA, threshold-comparison reasoning, calibrated refusal,
-and vitals-triggered response. This cell implements Category 1
-(direct grounded QA) only -- the other three are added in
-subsequent steps.
+Combines four synthetic categories generated from the project's own
+knowledge base (targeting specific behaviors identified during
+Milestone 4 evaluation) with a supplementary sample of real PubMedQA
+examples (Jin et al., 2019, EMNLP) for broader biomedical reasoning
+exposure. Produces a stratified train/validation split.
 """
 
 import json
+import random
+import sys
 from pathlib import Path
 
+sys.path.insert(0, ".")
 
-def load_knowledge_base(path: str) -> list[dict]:
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+SYSTEM_PROMPT = """You are a clinical reference assistant supporting an IoT-based patient monitoring system. You must answer using ONLY the reference material provided below. Follow these rules strictly:
 
+1. Base your answer only on facts and thresholds stated in the provided reference documents.
+2. You ARE permitted, and expected, to compare a specific numeric value given in the question against a range or threshold stated in the reference material. This is retrieval-grounded reasoning, not guessing, and you must perform it when the reference material supports it.
+3. Only refuse to answer if the reference material genuinely does not contain a relevant threshold, range, or fact needed to address the question.
+4. When you state a fact or conclusion, mention which document title it is grounded in.
+5. Do not introduce any medical fact, threshold, or number that is not present in the reference material.
+6. Be concise and clinically precise."""
 
-# Paraphrased question templates per document category.
-# Multiple phrasings per document teach the model to recognize the
-# *intent* behind a question, not just match surface keywords --
-# directly reinforcing what RAG retrieval already does at the
-# embedding level, now baked into generation behavior too.
 QUESTION_TEMPLATES = {
     "vitals-hr-001": [
         "What is a normal heart rate for an adult?",
@@ -56,90 +58,39 @@ QUESTION_TEMPLATES = {
     ],
 }
 
-SYSTEM_PROMPT = """You are a clinical reference assistant supporting an IoT-based patient monitoring system. You must answer using ONLY the reference material provided below. Follow these rules strictly:
 
-1. Base your answer only on facts and thresholds stated in the provided reference documents.
-2. You ARE permitted, and expected, to compare a specific numeric value given in the question against a range or threshold stated in the reference material. This is retrieval-grounded reasoning, not guessing, and you must perform it when the reference material supports it.
-3. Only refuse to answer if the reference material genuinely does not contain a relevant threshold, range, or fact needed to address the question.
-4. When you state a fact or conclusion, mention which document title it is grounded in.
-5. Do not introduce any medical fact, threshold, or number that is not present in the reference material.
-6. Be concise and clinically precise."""
+def load_knowledge_base(path: str) -> list[dict]:
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 
 def generate_grounded_qa_examples(documents: list[dict]) -> list[dict]:
-    """
-    Category 1: Direct grounded QA.
-
-    For each document, generate multiple question variants whose
-    answer is a direct, well-cited restatement of that document's content.
-    """
+    """Category 1: Direct grounded QA -- paraphrased questions per document."""
     examples = []
-
     for doc in documents:
-        doc_id = doc["id"]
-        templates = QUESTION_TEMPLATES.get(doc_id, [])
-
-        for question in templates:
+        for question in QUESTION_TEMPLATES.get(doc["id"], []):
             context_block = f"[{doc['title']}]\n{doc['content']}"
-
-            # Response follows the exact citation pattern we validated
-            # in Milestone 4's successful test -- restating the fact
-            # and naming the source document explicitly.
             response = (
                 f"According to the reference document \"{doc['title']}\", "
                 f"{doc['content'][0].lower()}{doc['content'][1:]}"
             )
-
             examples.append({
-                "system": SYSTEM_PROMPT,
-                "context": context_block,
-                "question": question,
-                "response": response,
-                "category": "grounded_qa",
-                "source_doc_id": doc_id,
+                "system": SYSTEM_PROMPT, "context": context_block,
+                "question": question, "response": response,
+                "category": "grounded_qa", "source_doc_id": doc["id"],
             })
-
     return examples
 
 
-if __name__ == "__main__":
-    documents = load_knowledge_base("data/knowledge_base/vitals_reference.json")
-    examples = generate_grounded_qa_examples(documents)
-
-    print(f"Generated {len(examples)} grounded QA examples\n")
-    print("Sample example:")
-    print(json.dumps(examples[0], indent=2))
-
-    Path("data/training").mkdir(parents=True, exist_ok=True)
-    output_path = "data/training/synthetic_grounded_qa.jsonl"
-    with open(output_path, "w", encoding="utf-8") as f:
-        for ex in examples:
-            f.write(json.dumps(ex) + "\n")
-
-    print(f"\nSaved to {output_path}")
-
-
-def generate_threshold_comparison_examples(documents: list[dict], n_per_doc: int = 8, seed: int = 42) -> list[dict]:
-    """
-    Category 2: Threshold-comparison reasoning.
-
-    Generates synthetic patient values (some normal, some abnormal) and
-    pairs each with the relevant document, teaching the model to compare
-    a given number against a stated range rather than only restating
-    the range verbatim. Directly targets the over-refusal failure mode
-    found during Milestone 4 evaluation.
-    """
-    import random
+def generate_threshold_comparison_examples(documents: list[dict], n_per_doc: int = 20, seed: int = 42) -> list[dict]:
+    """Category 2: Threshold-comparison reasoning -- randomized synthetic values."""
     rng = random.Random(seed)
-
-    # (doc_id, vital_name, unit, normal_low, normal_high, plausible_low, plausible_high)
     vital_specs = [
         ("vitals-hr-001", "heart rate", "bpm", 60, 100, 35, 180),
         ("vitals-spo2-001", "SpO2", "%", 95, 100, 75, 100),
         ("vitals-temp-001", "temperature", "C", 36.1, 37.2, 33.0, 41.0),
         ("vitals-rr-001", "respiratory rate", "breaths/min", 12, 20, 5, 40),
     ]
-
     doc_lookup = {doc["id"]: doc for doc in documents}
     examples = []
 
@@ -149,7 +100,6 @@ def generate_threshold_comparison_examples(documents: list[dict], n_per_doc: int
 
         for _ in range(n_per_doc):
             bucket = rng.choice(["normal", "high", "low", "borderline"])
-
             if bucket == "normal":
                 value = round(rng.uniform(low, high), 1)
             elif bucket == "high":
@@ -165,8 +115,7 @@ def generate_threshold_comparison_examples(documents: list[dict], n_per_doc: int
             if low <= value <= high:
                 response = (
                     f"According to \"{doc['title']}\", a normal {vital_name} range is "
-                    f"{low} to {high} {unit}. A reading of {value} {unit} falls within this "
-                    f"normal range."
+                    f"{low} to {high} {unit}. A reading of {value} {unit} falls within this normal range."
                 )
             elif value > high:
                 response = (
@@ -182,62 +131,16 @@ def generate_threshold_comparison_examples(documents: list[dict], n_per_doc: int
                 )
 
             examples.append({
-                "system": SYSTEM_PROMPT,
-                "context": context_block,
-                "question": question,
-                "response": response,
-                "category": "threshold_comparison",
-                "source_doc_id": doc_id,
+                "system": SYSTEM_PROMPT, "context": context_block,
+                "question": question, "response": response,
+                "category": "threshold_comparison", "source_doc_id": doc_id,
             })
-
     return examples
 
 
-def run_generation():
-    """Generate all currently-implemented categories and save combined output."""
-    documents = load_knowledge_base("data/knowledge_base/vitals_reference.json")
-
-    grounded_qa = generate_grounded_qa_examples(documents)
-    threshold_comparison = generate_threshold_comparison_examples(documents)
-
-    all_examples = grounded_qa + threshold_comparison
-
-    print(f"Category 1 (grounded QA): {len(grounded_qa)} examples")
-    print(f"Category 2 (threshold comparison): {len(threshold_comparison)} examples")
-    print(f"Total so far: {len(all_examples)} examples\n")
-
-    print("Sample threshold-comparison example:")
-    print(json.dumps(threshold_comparison[0], indent=2))
-
-    Path("data/training").mkdir(parents=True, exist_ok=True)
-    output_path = "data/training/synthetic_combined.jsonl"
-    with open(output_path, "w", encoding="utf-8") as f:
-        for ex in all_examples:
-            f.write(json.dumps(ex) + "\n")
-
-    print(f"\nSaved {len(all_examples)} combined examples to {output_path}")
-    return all_examples
-
-
-if __name__ == "__main__":
-    run_generation()
-
-
 def generate_calibrated_refusal_examples(documents: list[dict], seed: int = 42) -> list[dict]:
-    """
-    Category 3: Calibrated refusal.
-
-    Pairs genuinely out-of-scope questions (medication dosing, diagnosis,
-    treatment, prognosis -- none of which the KB covers) with real
-    retrieved-context documents, teaching the model to recognize when
-    retrieved content is present but irrelevant to the question, not
-    just when context is entirely absent. This is the necessary
-    counterbalance to Category 2, preventing the model from swinging
-    from over-refusal to over-confidence.
-    """
-    import random
+    """Category 3: Calibrated refusal -- genuinely out-of-scope questions."""
     rng = random.Random(seed)
-
     out_of_scope_questions = [
         "What medication should be given for a heart rate of 145 bpm?",
         "What is the recommended dosage of oxygen therapy for low SpO2?",
@@ -250,7 +153,6 @@ def generate_calibrated_refusal_examples(documents: list[dict], seed: int = 42) 
         "Is this patient's abnormal heart rate caused by anxiety or a cardiac condition?",
         "What follow-up tests should be ordered based on these vitals?",
     ]
-
     refusal_response = (
         "The available reference material does not contain sufficient information "
         "to answer this. The retrieved documents describe normal vital sign ranges "
@@ -258,47 +160,25 @@ def generate_calibrated_refusal_examples(documents: list[dict], seed: int = 42) 
         "treatment, or prognostic information. This question should be directed to "
         "a qualified clinician."
     )
-
     examples = []
     for question in out_of_scope_questions:
-        # Pair with a random real document, since real retrieval always
-        # returns *something* -- the model must learn to recognize when
-        # what's retrieved doesn't actually answer the question, not just
-        # respond to an empty context.
         doc = rng.choice(documents)
         context_block = f"[{doc['title']}]\n{doc['content']}"
-
         examples.append({
-            "system": SYSTEM_PROMPT,
-            "context": context_block,
-            "question": question,
-            "response": refusal_response,
-            "category": "calibrated_refusal",
-            "source_doc_id": doc["id"],
+            "system": SYSTEM_PROMPT, "context": context_block,
+            "question": question, "response": refusal_response,
+            "category": "calibrated_refusal", "source_doc_id": doc["id"],
         })
-
     return examples
 
 
-def generate_vitals_triggered_examples(documents: list[dict], n_examples: int = 40, seed: int = 42) -> list[dict]:
-    """
-    Category 4: Vitals-triggered queries.
-
-    Uses the actual VitalsSimulator from Milestone 2 to generate readings,
-    then constructs training examples where the "question" is a structured
-    sensor reading rather than free text -- matching how the real system
-    will invoke the model when the IoT gateway detects a reading worth
-    checking, not just when a user types a question.
-    """
-    import sys
-    sys.path.insert(0, ".")
+def generate_vitals_triggered_examples(documents: list[dict], n_examples: int = 60, seed: int = 42) -> list[dict]:
+    """Category 4: Vitals-triggered queries -- uses the real VitalsSimulator."""
     from edge.vitals_simulator import VitalsSimulator
 
     doc_lookup = {doc["id"]: doc for doc in documents}
-    hr_doc = doc_lookup["vitals-hr-001"]
-    spo2_doc = doc_lookup["vitals-spo2-001"]
-    temp_doc = doc_lookup["vitals-temp-001"]
-    rr_doc = doc_lookup["vitals-rr-001"]
+    hr_doc, spo2_doc = doc_lookup["vitals-hr-001"], doc_lookup["vitals-spo2-001"]
+    temp_doc, rr_doc = doc_lookup["vitals-temp-001"], doc_lookup["vitals-rr-001"]
     alert_doc = doc_lookup["vitals-alert-001"]
 
     sim = VitalsSimulator(anomaly_probability=0.4, seed=seed)
@@ -306,17 +186,12 @@ def generate_vitals_triggered_examples(documents: list[dict], n_examples: int = 
 
     for _ in range(n_examples):
         reading = sim.next_reading()
-
         question = (
             f"IoT sensor reading received: heart rate {reading.heart_rate_bpm} bpm, "
             f"SpO2 {reading.spo2_percent}%, temperature {reading.temperature_celsius}C, "
-            f"respiratory rate {reading.respiratory_rate_bpm} breaths/min. "
-            f"Evaluate this reading."
+            f"respiratory rate {reading.respiratory_rate_bpm} breaths/min. Evaluate this reading."
         )
 
-        # Determine which vitals are abnormal, using the same thresholds
-        # as the knowledge base documents themselves -- keeps training
-        # labels consistent with what the model is meant to retrieve.
         abnormal_flags = []
         if not (60 <= reading.heart_rate_bpm <= 100):
             abnormal_flags.append(("heart rate", reading.heart_rate_bpm, "bpm", hr_doc))
@@ -330,14 +205,13 @@ def generate_vitals_triggered_examples(documents: list[dict], n_examples: int = 
         relevant_docs = [hr_doc, spo2_doc, temp_doc, rr_doc]
         if len(abnormal_flags) >= 2:
             relevant_docs.append(alert_doc)
-
         context_block = "\n\n".join(f"[{d['title']}]\n{d['content']}" for d in relevant_docs)
 
         if not abnormal_flags:
             response = (
-                "All four vital signs fall within normal ranges according to the "
-                "reference material: heart rate, SpO2, temperature, and respiratory rate "
-                "are each within their respective normal thresholds. No escalation is indicated."
+                "All four vital signs fall within normal ranges according to the reference "
+                "material: heart rate, SpO2, temperature, and respiratory rate are each within "
+                "their respective normal thresholds. No escalation is indicated."
             )
         else:
             parts = [
@@ -353,69 +227,50 @@ def generate_vitals_triggered_examples(documents: list[dict], n_examples: int = 
                 )
             else:
                 response = (
-                    f"One abnormal reading detected: {parts[0]}. "
-                    f"This single deviation warrants monitoring per the reference material, "
-                    f"though the other vitals remain within normal ranges."
+                    f"One abnormal reading detected: {parts[0]}. This single deviation warrants "
+                    f"monitoring per the reference material, though the other vitals remain within normal ranges."
                 )
 
         examples.append({
-            "system": SYSTEM_PROMPT,
-            "context": context_block,
-            "question": question,
-            "response": response,
-            "category": "vitals_triggered",
-            "source_doc_id": "multiple",
+            "system": SYSTEM_PROMPT, "context": context_block,
+            "question": question, "response": response,
+            "category": "vitals_triggered", "source_doc_id": "multiple",
         })
-
     return examples
 
 
-def run_full_generation():
-    """Generate all four categories and save the final combined synthetic dataset."""
-    documents = load_knowledge_base("data/knowledge_base/vitals_reference.json")
+def load_pubmedqa_examples(n_examples: int = 25, seed: int = 42) -> list[dict]:
+    """Category 5: Real PubMedQA examples (Jin et al., 2019, EMNLP) for broader biomedical exposure."""
+    from datasets import load_dataset
 
-    grounded_qa = generate_grounded_qa_examples(documents)
-    threshold_comparison = generate_threshold_comparison_examples(documents)
-    calibrated_refusal = generate_calibrated_refusal_examples(documents)
-    vitals_triggered = generate_vitals_triggered_examples(documents)
+    print("Loading PubMedQA (pqa_labeled) from Hugging Face...")
+    dataset = load_dataset("qiaojin/PubMedQA", "pqa_labeled", split="train")
 
-    all_examples = grounded_qa + threshold_comparison + calibrated_refusal + vitals_triggered
+    rng = random.Random(seed)
+    indices = list(range(len(dataset)))
+    rng.shuffle(indices)
+    selected_indices = indices[:n_examples]
 
-    print(f"Category 1 (grounded QA):          {len(grounded_qa):>4} examples")
-    print(f"Category 2 (threshold comparison): {len(threshold_comparison):>4} examples")
-    print(f"Category 3 (calibrated refusal):   {len(calibrated_refusal):>4} examples")
-    print(f"Category 4 (vitals-triggered):     {len(vitals_triggered):>4} examples")
-    print(f"{'-'*45}")
-    print(f"Total synthetic examples:          {len(all_examples):>4}")
+    examples = []
+    for idx in selected_indices:
+        row = dataset[idx]
+        contexts, labels = row["context"]["contexts"], row["context"]["labels"]
+        context_block = "\n\n".join(f"[{label}]\n{text}" for label, text in zip(labels, contexts))
+        response = f"{row['long_answer']} (Summary judgment: {row['final_decision']})."
 
-    Path("data/training").mkdir(parents=True, exist_ok=True)
-    output_path = "data/training/synthetic_full.jsonl"
-    with open(output_path, "w", encoding="utf-8") as f:
-        for ex in all_examples:
-            f.write(json.dumps(ex) + "\n")
+        examples.append({
+            "system": SYSTEM_PROMPT, "context": context_block,
+            "question": row["question"], "response": response,
+            "category": "pubmedqa_general", "source_doc_id": f"pubmedqa_{idx}",
+        })
 
-    print(f"\nSaved {len(all_examples)} examples to {output_path}")
-
-    print("\nSample vitals-triggered example:")
-    print(json.dumps(vitals_triggered[0], indent=2))
-
-    return all_examples
-
-
-if __name__ == "__main__":
-    run_full_generation()
+    print(f"Loaded {len(examples)} PubMedQA examples")
+    return examples
 
 
 def train_val_split(examples: list[dict], val_fraction: float = 0.15, seed: int = 42) -> tuple[list[dict], list[dict]]:
-    """
-    Stratified train/validation split -- splits within each category
-    separately, so every category (including small ones like calibrated
-    refusal) is represented in both sets. This lets Milestone 6 evaluate
-    per-category performance on genuinely held-out examples.
-    """
-    import random
+    """Stratified split -- every category represented in both train and validation."""
     rng = random.Random(seed)
-
     by_category: dict[str, list[dict]] = {}
     for ex in examples:
         by_category.setdefault(ex["category"], []).append(ex)
@@ -433,35 +288,30 @@ def train_val_split(examples: list[dict], val_fraction: float = 0.15, seed: int 
     return train, val
 
 
-def run_full_generation_v2():
-    """
-    Scaled generation: increases Category 2 and Category 4 volume to
-    reach the ~170-example synthetic target, then produces a stratified
-    train/validation split saved as separate JSONL files.
-    """
+def run_final_generation():
+    """Generate all five categories (4 synthetic + PubMedQA), split, and save."""
     documents = load_knowledge_base("data/knowledge_base/vitals_reference.json")
 
     grounded_qa = generate_grounded_qa_examples(documents)
     threshold_comparison = generate_threshold_comparison_examples(documents, n_per_doc=20)
     calibrated_refusal = generate_calibrated_refusal_examples(documents)
     vitals_triggered = generate_vitals_triggered_examples(documents, n_examples=60)
+    pubmedqa = load_pubmedqa_examples(n_examples=25)
 
-    all_examples = grounded_qa + threshold_comparison + calibrated_refusal + vitals_triggered
+    all_examples = grounded_qa + threshold_comparison + calibrated_refusal + vitals_triggered + pubmedqa
 
-    print(f"Category 1 (grounded QA):          {len(grounded_qa):>4} examples")
-    print(f"Category 2 (threshold comparison): {len(threshold_comparison):>4} examples")
-    print(f"Category 3 (calibrated refusal):   {len(calibrated_refusal):>4} examples")
-    print(f"Category 4 (vitals-triggered):     {len(vitals_triggered):>4} examples")
+    print(f"\nCategory 1 (grounded QA):          {len(grounded_qa):>4}")
+    print(f"Category 2 (threshold comparison): {len(threshold_comparison):>4}")
+    print(f"Category 3 (calibrated refusal):   {len(calibrated_refusal):>4}")
+    print(f"Category 4 (vitals-triggered):     {len(vitals_triggered):>4}")
+    print(f"Category 5 (PubMedQA):             {len(pubmedqa):>4}")
     print(f"{'-'*45}")
-    print(f"Total synthetic examples:          {len(all_examples):>4}")
+    print(f"Total examples:                    {len(all_examples):>4}")
 
     train, val = train_val_split(all_examples, val_fraction=0.15)
+    print(f"\nTrain set: {len(train)} | Validation set: {len(val)}")
 
-    print(f"\nTrain set: {len(train)} examples")
-    print(f"Validation set: {len(val)} examples")
-
-    train_by_cat = {}
-    val_by_cat = {}
+    train_by_cat, val_by_cat = {}, {}
     for ex in train:
         train_by_cat[ex["category"]] = train_by_cat.get(ex["category"], 0) + 1
     for ex in val:
@@ -480,9 +330,8 @@ def run_full_generation_v2():
             f.write(json.dumps(ex) + "\n")
 
     print(f"\nSaved train.jsonl ({len(train)}) and val.jsonl ({len(val)})")
-
     return train, val
 
 
 if __name__ == "__main__":
-    run_full_generation_v2()
+    run_final_generation()
