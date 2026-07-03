@@ -221,3 +221,186 @@ def run_generation():
 
 if __name__ == "__main__":
     run_generation()
+
+
+def generate_calibrated_refusal_examples(documents: list[dict], seed: int = 42) -> list[dict]:
+    """
+    Category 3: Calibrated refusal.
+
+    Pairs genuinely out-of-scope questions (medication dosing, diagnosis,
+    treatment, prognosis -- none of which the KB covers) with real
+    retrieved-context documents, teaching the model to recognize when
+    retrieved content is present but irrelevant to the question, not
+    just when context is entirely absent. This is the necessary
+    counterbalance to Category 2, preventing the model from swinging
+    from over-refusal to over-confidence.
+    """
+    import random
+    rng = random.Random(seed)
+
+    out_of_scope_questions = [
+        "What medication should be given for a heart rate of 145 bpm?",
+        "What is the recommended dosage of oxygen therapy for low SpO2?",
+        "Should this patient be prescribed antipyretics for their fever?",
+        "What is the diagnosis for a patient with these vital signs?",
+        "How long will it take for this patient's condition to improve?",
+        "What is the patient's prognosis given these readings?",
+        "Should this patient be admitted to the ICU?",
+        "What antibiotic would be appropriate for this patient's fever?",
+        "Is this patient's abnormal heart rate caused by anxiety or a cardiac condition?",
+        "What follow-up tests should be ordered based on these vitals?",
+    ]
+
+    refusal_response = (
+        "The available reference material does not contain sufficient information "
+        "to answer this. The retrieved documents describe normal vital sign ranges "
+        "and general escalation guidance, but do not include medication, diagnostic, "
+        "treatment, or prognostic information. This question should be directed to "
+        "a qualified clinician."
+    )
+
+    examples = []
+    for question in out_of_scope_questions:
+        # Pair with a random real document, since real retrieval always
+        # returns *something* -- the model must learn to recognize when
+        # what's retrieved doesn't actually answer the question, not just
+        # respond to an empty context.
+        doc = rng.choice(documents)
+        context_block = f"[{doc['title']}]\n{doc['content']}"
+
+        examples.append({
+            "system": SYSTEM_PROMPT,
+            "context": context_block,
+            "question": question,
+            "response": refusal_response,
+            "category": "calibrated_refusal",
+            "source_doc_id": doc["id"],
+        })
+
+    return examples
+
+
+def generate_vitals_triggered_examples(documents: list[dict], n_examples: int = 40, seed: int = 42) -> list[dict]:
+    """
+    Category 4: Vitals-triggered queries.
+
+    Uses the actual VitalsSimulator from Milestone 2 to generate readings,
+    then constructs training examples where the "question" is a structured
+    sensor reading rather than free text -- matching how the real system
+    will invoke the model when the IoT gateway detects a reading worth
+    checking, not just when a user types a question.
+    """
+    import sys
+    sys.path.insert(0, ".")
+    from edge.vitals_simulator import VitalsSimulator
+
+    doc_lookup = {doc["id"]: doc for doc in documents}
+    hr_doc = doc_lookup["vitals-hr-001"]
+    spo2_doc = doc_lookup["vitals-spo2-001"]
+    temp_doc = doc_lookup["vitals-temp-001"]
+    rr_doc = doc_lookup["vitals-rr-001"]
+    alert_doc = doc_lookup["vitals-alert-001"]
+
+    sim = VitalsSimulator(anomaly_probability=0.4, seed=seed)
+    examples = []
+
+    for _ in range(n_examples):
+        reading = sim.next_reading()
+
+        question = (
+            f"IoT sensor reading received: heart rate {reading.heart_rate_bpm} bpm, "
+            f"SpO2 {reading.spo2_percent}%, temperature {reading.temperature_celsius}C, "
+            f"respiratory rate {reading.respiratory_rate_bpm} breaths/min. "
+            f"Evaluate this reading."
+        )
+
+        # Determine which vitals are abnormal, using the same thresholds
+        # as the knowledge base documents themselves -- keeps training
+        # labels consistent with what the model is meant to retrieve.
+        abnormal_flags = []
+        if not (60 <= reading.heart_rate_bpm <= 100):
+            abnormal_flags.append(("heart rate", reading.heart_rate_bpm, "bpm", hr_doc))
+        if not (95 <= reading.spo2_percent <= 100):
+            abnormal_flags.append(("SpO2", reading.spo2_percent, "%", spo2_doc))
+        if not (36.1 <= reading.temperature_celsius <= 37.2):
+            abnormal_flags.append(("temperature", reading.temperature_celsius, "C", temp_doc))
+        if not (12 <= reading.respiratory_rate_bpm <= 20):
+            abnormal_flags.append(("respiratory rate", reading.respiratory_rate_bpm, "breaths/min", rr_doc))
+
+        relevant_docs = [hr_doc, spo2_doc, temp_doc, rr_doc]
+        if len(abnormal_flags) >= 2:
+            relevant_docs.append(alert_doc)
+
+        context_block = "\n\n".join(f"[{d['title']}]\n{d['content']}" for d in relevant_docs)
+
+        if not abnormal_flags:
+            response = (
+                "All four vital signs fall within normal ranges according to the "
+                "reference material: heart rate, SpO2, temperature, and respiratory rate "
+                "are each within their respective normal thresholds. No escalation is indicated."
+            )
+        else:
+            parts = [
+                f"{name} of {value} {unit} falls outside the normal range stated in \"{doc['title']}\""
+                for name, value, unit, doc in abnormal_flags
+            ]
+            if len(abnormal_flags) >= 2:
+                response = (
+                    f"Multiple abnormal readings detected: {'; '.join(parts)}. "
+                    f"According to \"{alert_doc['title']}\", a combination of abnormal vitals "
+                    f"is more clinically significant than any single abnormal reading in isolation, "
+                    f"and this combination warrants prompt escalation."
+                )
+            else:
+                response = (
+                    f"One abnormal reading detected: {parts[0]}. "
+                    f"This single deviation warrants monitoring per the reference material, "
+                    f"though the other vitals remain within normal ranges."
+                )
+
+        examples.append({
+            "system": SYSTEM_PROMPT,
+            "context": context_block,
+            "question": question,
+            "response": response,
+            "category": "vitals_triggered",
+            "source_doc_id": "multiple",
+        })
+
+    return examples
+
+
+def run_full_generation():
+    """Generate all four categories and save the final combined synthetic dataset."""
+    documents = load_knowledge_base("data/knowledge_base/vitals_reference.json")
+
+    grounded_qa = generate_grounded_qa_examples(documents)
+    threshold_comparison = generate_threshold_comparison_examples(documents)
+    calibrated_refusal = generate_calibrated_refusal_examples(documents)
+    vitals_triggered = generate_vitals_triggered_examples(documents)
+
+    all_examples = grounded_qa + threshold_comparison + calibrated_refusal + vitals_triggered
+
+    print(f"Category 1 (grounded QA):          {len(grounded_qa):>4} examples")
+    print(f"Category 2 (threshold comparison): {len(threshold_comparison):>4} examples")
+    print(f"Category 3 (calibrated refusal):   {len(calibrated_refusal):>4} examples")
+    print(f"Category 4 (vitals-triggered):     {len(vitals_triggered):>4} examples")
+    print(f"{'-'*45}")
+    print(f"Total synthetic examples:          {len(all_examples):>4}")
+
+    Path("data/training").mkdir(parents=True, exist_ok=True)
+    output_path = "data/training/synthetic_full.jsonl"
+    with open(output_path, "w", encoding="utf-8") as f:
+        for ex in all_examples:
+            f.write(json.dumps(ex) + "\n")
+
+    print(f"\nSaved {len(all_examples)} examples to {output_path}")
+
+    print("\nSample vitals-triggered example:")
+    print(json.dumps(vitals_triggered[0], indent=2))
+
+    return all_examples
+
+
+if __name__ == "__main__":
+    run_full_generation()
