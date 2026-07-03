@@ -1,0 +1,44 @@
+[
+  {
+    "id": "vitals-hr-001",
+    "title": "Normal Resting Heart Rate Range (Adult)",
+    "category": "vitals",
+    "content": "For a healthy adult at rest, a normal heart rate ranges from 60 to 100 beats per minute (bpm). Heart rates consistently below 60 bpm (bradycardia) or above 100 bpm (tachycardia) at rest may indicate an underlying condition and typically warrant clinical evaluation, though well-conditioned athletes can have resting rates below 60 bpm as a normal finding.",
+    "source": "General clinical reference"
+  },
+  {
+    "id": "vitals-spo2-001",
+    "title": "Normal Blood Oxygen Saturation (SpO2)",
+    "category": "vitals",
+    "content": "Normal SpO2 (peripheral oxygen saturation) for a healthy individual is typically 95% to 100%. Readings between 91% and 94% suggest mild hypoxemia and should be monitored closely. Readings at or below 90% indicate significant hypoxemia and require prompt clinical attention.",
+    "source": "General clinical reference"
+  },
+  {
+    "id": "vitals-temp-001",
+    "title": "Normal Body Temperature Range",
+    "category": "vitals",
+    "content": "Normal adult body temperature is generally considered to be between 36.1C and 37.2C (97F to 99F), though individual baseline varies. A temperature above 38.0C (100.4F) is generally classified as fever. A temperature below 35.0C (95F) is classified as hypothermia and is a medical emergency.",
+    "source": "General clinical reference"
+  },
+  {
+    "id": "vitals-rr-001",
+    "title": "Normal Respiratory Rate Range (Adult)",
+    "category": "vitals",
+    "content": "A normal resting respiratory rate for a healthy adult is 12 to 20 breaths per minute. A rate below 12 (bradypnea) or above 20 (tachypnea) at rest can indicate respiratory distress, metabolic disturbance, or other underlying conditions.",
+    "source": "General clinical reference"
+  },
+  {
+    "id": "vitals-bp-001",
+    "title": "Normal Blood Pressure Range (Adult)",
+    "category": "vitals",
+    "content": "Normal blood pressure for an adult is generally below 120/80 mmHg. Readings consistently at or above 130/80 mmHg are classified as hypertension. Readings below approximately 90/60 mmHg may indicate hypotension, particularly if accompanied by symptoms such as dizziness.",
+    "source": "General clinical reference"
+  },
+  {
+    "id": "vitals-alert-001",
+    "title": "Multi-Parameter Warning Signs Requiring Escalation",
+    "category": "protocol",
+    "content": "A combination of abnormal vitals (for example, elevated heart rate together with low SpO2, or fever together with tachypnea) is more clinically significant than any single abnormal reading in isolation, and general monitoring protocols typically prioritize escalation when multiple parameters deviate simultaneously rather than relying on one metric alone.",
+    "source": "General clinical reference"
+  }
+]
