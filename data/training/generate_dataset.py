@@ -404,3 +404,85 @@ def run_full_generation():
 
 if __name__ == "__main__":
     run_full_generation()
+
+
+def train_val_split(examples: list[dict], val_fraction: float = 0.15, seed: int = 42) -> tuple[list[dict], list[dict]]:
+    """
+    Stratified train/validation split -- splits within each category
+    separately, so every category (including small ones like calibrated
+    refusal) is represented in both sets. This lets Milestone 6 evaluate
+    per-category performance on genuinely held-out examples.
+    """
+    import random
+    rng = random.Random(seed)
+
+    by_category: dict[str, list[dict]] = {}
+    for ex in examples:
+        by_category.setdefault(ex["category"], []).append(ex)
+
+    train, val = [], []
+    for category, cat_examples in by_category.items():
+        shuffled = cat_examples[:]
+        rng.shuffle(shuffled)
+        n_val = max(1, round(len(shuffled) * val_fraction))
+        val.extend(shuffled[:n_val])
+        train.extend(shuffled[n_val:])
+
+    rng.shuffle(train)
+    rng.shuffle(val)
+    return train, val
+
+
+def run_full_generation_v2():
+    """
+    Scaled generation: increases Category 2 and Category 4 volume to
+    reach the ~170-example synthetic target, then produces a stratified
+    train/validation split saved as separate JSONL files.
+    """
+    documents = load_knowledge_base("data/knowledge_base/vitals_reference.json")
+
+    grounded_qa = generate_grounded_qa_examples(documents)
+    threshold_comparison = generate_threshold_comparison_examples(documents, n_per_doc=20)
+    calibrated_refusal = generate_calibrated_refusal_examples(documents)
+    vitals_triggered = generate_vitals_triggered_examples(documents, n_examples=60)
+
+    all_examples = grounded_qa + threshold_comparison + calibrated_refusal + vitals_triggered
+
+    print(f"Category 1 (grounded QA):          {len(grounded_qa):>4} examples")
+    print(f"Category 2 (threshold comparison): {len(threshold_comparison):>4} examples")
+    print(f"Category 3 (calibrated refusal):   {len(calibrated_refusal):>4} examples")
+    print(f"Category 4 (vitals-triggered):     {len(vitals_triggered):>4} examples")
+    print(f"{'-'*45}")
+    print(f"Total synthetic examples:          {len(all_examples):>4}")
+
+    train, val = train_val_split(all_examples, val_fraction=0.15)
+
+    print(f"\nTrain set: {len(train)} examples")
+    print(f"Validation set: {len(val)} examples")
+
+    train_by_cat = {}
+    val_by_cat = {}
+    for ex in train:
+        train_by_cat[ex["category"]] = train_by_cat.get(ex["category"], 0) + 1
+    for ex in val:
+        val_by_cat[ex["category"]] = val_by_cat.get(ex["category"], 0) + 1
+
+    print("\nPer-category split:")
+    for cat in train_by_cat:
+        print(f"  {cat:<22} train: {train_by_cat.get(cat, 0):>3}  val: {val_by_cat.get(cat, 0):>3}")
+
+    Path("data/training").mkdir(parents=True, exist_ok=True)
+    with open("data/training/train.jsonl", "w", encoding="utf-8") as f:
+        for ex in train:
+            f.write(json.dumps(ex) + "\n")
+    with open("data/training/val.jsonl", "w", encoding="utf-8") as f:
+        for ex in val:
+            f.write(json.dumps(ex) + "\n")
+
+    print(f"\nSaved train.jsonl ({len(train)}) and val.jsonl ({len(val)})")
+
+    return train, val
+
+
+if __name__ == "__main__":
+    run_full_generation_v2()
