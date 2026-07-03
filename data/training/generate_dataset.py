@@ -117,3 +117,107 @@ if __name__ == "__main__":
             f.write(json.dumps(ex) + "\n")
 
     print(f"\nSaved to {output_path}")
+
+
+def generate_threshold_comparison_examples(documents: list[dict], n_per_doc: int = 8, seed: int = 42) -> list[dict]:
+    """
+    Category 2: Threshold-comparison reasoning.
+
+    Generates synthetic patient values (some normal, some abnormal) and
+    pairs each with the relevant document, teaching the model to compare
+    a given number against a stated range rather than only restating
+    the range verbatim. Directly targets the over-refusal failure mode
+    found during Milestone 4 evaluation.
+    """
+    import random
+    rng = random.Random(seed)
+
+    # (doc_id, vital_name, unit, normal_low, normal_high, plausible_low, plausible_high)
+    vital_specs = [
+        ("vitals-hr-001", "heart rate", "bpm", 60, 100, 35, 180),
+        ("vitals-spo2-001", "SpO2", "%", 95, 100, 75, 100),
+        ("vitals-temp-001", "temperature", "C", 36.1, 37.2, 33.0, 41.0),
+        ("vitals-rr-001", "respiratory rate", "breaths/min", 12, 20, 5, 40),
+    ]
+
+    doc_lookup = {doc["id"]: doc for doc in documents}
+    examples = []
+
+    for doc_id, vital_name, unit, low, high, plaus_low, plaus_high in vital_specs:
+        doc = doc_lookup[doc_id]
+        context_block = f"[{doc['title']}]\n{doc['content']}"
+
+        for _ in range(n_per_doc):
+            bucket = rng.choice(["normal", "high", "low", "borderline"])
+
+            if bucket == "normal":
+                value = round(rng.uniform(low, high), 1)
+            elif bucket == "high":
+                value = round(rng.uniform(high + (high - low) * 0.1, plaus_high), 1)
+            elif bucket == "low":
+                value = round(rng.uniform(plaus_low, low - (high - low) * 0.1), 1)
+            else:
+                offset = (high - low) * 0.05
+                value = round(rng.choice([low - offset, high + offset]), 1)
+
+            question = f"A patient's {vital_name} is {value} {unit}. Is this within the normal range?"
+
+            if low <= value <= high:
+                response = (
+                    f"According to \"{doc['title']}\", a normal {vital_name} range is "
+                    f"{low} to {high} {unit}. A reading of {value} {unit} falls within this "
+                    f"normal range."
+                )
+            elif value > high:
+                response = (
+                    f"According to \"{doc['title']}\", a normal {vital_name} range is "
+                    f"{low} to {high} {unit}. A reading of {value} {unit} exceeds this range, "
+                    f"which the reference material indicates may warrant clinical evaluation."
+                )
+            else:
+                response = (
+                    f"According to \"{doc['title']}\", a normal {vital_name} range is "
+                    f"{low} to {high} {unit}. A reading of {value} {unit} falls below this range, "
+                    f"which the reference material indicates may warrant clinical evaluation."
+                )
+
+            examples.append({
+                "system": SYSTEM_PROMPT,
+                "context": context_block,
+                "question": question,
+                "response": response,
+                "category": "threshold_comparison",
+                "source_doc_id": doc_id,
+            })
+
+    return examples
+
+
+def run_generation():
+    """Generate all currently-implemented categories and save combined output."""
+    documents = load_knowledge_base("data/knowledge_base/vitals_reference.json")
+
+    grounded_qa = generate_grounded_qa_examples(documents)
+    threshold_comparison = generate_threshold_comparison_examples(documents)
+
+    all_examples = grounded_qa + threshold_comparison
+
+    print(f"Category 1 (grounded QA): {len(grounded_qa)} examples")
+    print(f"Category 2 (threshold comparison): {len(threshold_comparison)} examples")
+    print(f"Total so far: {len(all_examples)} examples\n")
+
+    print("Sample threshold-comparison example:")
+    print(json.dumps(threshold_comparison[0], indent=2))
+
+    Path("data/training").mkdir(parents=True, exist_ok=True)
+    output_path = "data/training/synthetic_combined.jsonl"
+    with open(output_path, "w", encoding="utf-8") as f:
+        for ex in all_examples:
+            f.write(json.dumps(ex) + "\n")
+
+    print(f"\nSaved {len(all_examples)} combined examples to {output_path}")
+    return all_examples
+
+
+if __name__ == "__main__":
+    run_generation()
