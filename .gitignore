@@ -1,7 +1,8 @@
-venv/
-__pycache__/
-*.pyc
-.env
-*.log
-data/raw/*
-!data/raw/.gitkeep
+physionet_pipeline/data/
+physionet_pipeline/outputs/patients_combined.parquet
+physionet_pipeline/outputs/*/final_adapter/
+physionet_pipeline/outputs/*/checkpoint-*/
+physionet_pipeline/wget_log.txt
+model/checkpoints/llama1b_lora/checkpoint-*/
+physionet_pipeline/outputs/*.jsonl
+physionet_pipeline/outputs/*.jsonl
